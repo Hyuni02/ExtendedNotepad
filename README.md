@@ -4,8 +4,17 @@
 분할 기능을 뺀 나머지는 Windows 10 메모장과 똑같이 동작하는 것을 목표로 한다.
 
 - 대상: Windows 10 / 11 (x64)
-- 설치 불필요. `build\ExtendedNotepad.exe` 하나만 있으면 된다.
+- 설치 불필요. 실행 파일 하나만 있으면 된다.
 - 창 하나 = 문서 하나. 여러 문서는 창(프로세스)을 여러 개 띄운다.
+
+## 다운로드
+
+### ⬇ [ExtendedNotepad.exe 내려받기](https://github.com/Hyuni02/ExtendedNotepad/releases/latest/download/ExtendedNotepad.exe)
+
+[모든 릴리스 보기](https://github.com/Hyuni02/ExtendedNotepad/releases)
+
+내려받은 파일을 그대로 실행하면 된다. 설치 과정도, 별도 런타임도 필요 없다.
+`.etxt`를 탐색기에서 더블클릭해 열고 싶다면 [`.etxt` 파일 연결](#etxt-파일-연결)을 참고한다.
 
 ## 빌드
 
