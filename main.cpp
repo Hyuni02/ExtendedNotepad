@@ -2311,6 +2311,8 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int) {
         { FVIRTKEY | FCONTROL, 'Z', IDM_UNDO },
         { FVIRTKEY | FCONTROL | FSHIFT, 'Z', IDM_REDO },
         { FVIRTKEY | FCONTROL, 'Y', IDM_REDO },
+        // 여러 줄 EDIT은 Ctrl+A를 처리하지 않는다. 메모장처럼 직접 건다.
+        { FVIRTKEY | FCONTROL, 'A', IDM_SELECT_ALL },
         { FVIRTKEY | FCONTROL, 'R', IDM_SPLIT_V },
         { FVIRTKEY | FCONTROL, 'T', IDM_SPLIT_H },
         { FVIRTKEY | FCONTROL, 'W', IDM_CLOSE_PANE },
