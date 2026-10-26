@@ -1,0 +1,14 @@
+# 빌드 산출물
+build/
+
+# MSVC 부산물
+*.obj
+*.res
+*.exe
+*.pdb
+*.ilk
+*.idb
+
+# Visual Studio
+.vs/
+*.user
