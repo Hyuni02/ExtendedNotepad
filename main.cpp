@@ -105,6 +105,7 @@ static LOGFONTW g_baseFont;        // 글꼴 모양 (크기는 g_basePt)
 static int     g_basePt = 11;
 static int     g_zoom = 100;       // 퍼센트, 창 전체 적용
 static int     g_lineH = 16;       // 현재 글꼴의 한 줄 높이 (스크롤바 판정용)
+static bool    g_fontChosen = false;  // 사용자가 글꼴을 직접 고른 적이 있는가
 static HWND    g_findDlg = NULL;   // 찾기 또는 바꾸기 (메모장처럼 한 번에 하나)
 static bool    g_findIsReplace = false;
 static PAGESETUPDLGW g_psd;
@@ -766,6 +767,7 @@ static void ChooseFontDlg() {
     g_baseFont = lf;
     g_basePt = cf.iPointSize / 10;
     if (g_basePt < 1) g_basePt = 1;
+    g_fontChosen = true;
     ApplyFont();
 }
 
@@ -1566,11 +1568,15 @@ static std::wstring SettingsPath() {
     return dir + L"\\settings.ini";
 }
 
+// 기본 글꼴은 메모장과 같은 맑은 고딕. Consolas 같은 고정폭 글꼴을 쓰면
+// 공백이 한글 글자 폭의 70%를 넘게 차지해 간격이 눈에 띄게 벌어진다.
+static const wchar_t* const kDefaultFace = L"맑은 고딕";
+
 static void LoadSettings() {
     ZeroMemory(&g_baseFont, sizeof(g_baseFont));
     g_baseFont.lfCharSet = DEFAULT_CHARSET;
     g_baseFont.lfWeight = FW_NORMAL;
-    wcscpy_s(g_baseFont.lfFaceName, L"Consolas");
+    wcscpy_s(g_baseFont.lfFaceName, kDefaultFace);
     g_basePt = 11;
 
     std::wstring p = SettingsPath();
@@ -1582,7 +1588,12 @@ static void LoadSettings() {
     g_statusOn = GetPrivateProfileIntW(L"General", L"StatusBar", 1, f) != 0;
 
     wchar_t face[LF_FACESIZE];
-    GetPrivateProfileStringW(L"Font", L"Face", L"Consolas", face, LF_FACESIZE, f);
+    GetPrivateProfileStringW(L"Font", L"Face", kDefaultFace, face, LF_FACESIZE, f);
+    // 예전 버전이 기본으로 쓰던 Consolas는 한 번 기본값으로 되돌린다.
+    // 직접 고른 글꼴이라면 설정 창이나 서식 > 글꼴에서 다시 고르면 된다.
+    g_fontChosen = GetPrivateProfileIntW(L"Font", L"Chosen", 0, f) != 0;
+    if (_wcsicmp(face, L"Consolas") == 0 && !g_fontChosen)
+        wcscpy_s(face, kDefaultFace);
     wcscpy_s(g_baseFont.lfFaceName, face);
     int pt = (int)GetPrivateProfileIntW(L"Font", L"Point", 11, f);
     g_basePt = (pt >= 1 && pt <= 400) ? pt : 11;
@@ -1628,9 +1639,33 @@ static void SaveWindowPlacement(const wchar_t* f) {
     WritePrivateProfileStringW(L"Window", L"Maximized", v, f);
 }
 
+// 프로필 API는 ANSI 코드페이지를 거치면서 "맑은 고딕" 같은 이름의 마지막 글자를
+// 잘라먹는다. UTF-16LE BOM으로 시작하는 파일이면 변환 없이 그대로 읽고 쓴다.
+// SaveSettings가 모든 값을 다시 쓰므로 파일을 새로 만들어도 잃는 값이 없다.
+static void EnsureUnicodeIni(const std::wstring& p) {
+    HANDLE r = CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (r != INVALID_HANDLE_VALUE) {
+        unsigned char b[2] = { 0, 0 };
+        DWORD got = 0;
+        bool unicode = ReadFile(r, b, 2, &got, NULL) && got == 2 &&
+                       b[0] == 0xFF && b[1] == 0xFE;
+        CloseHandle(r);
+        if (unicode) return;
+    }
+    HANDLE w = CreateFileW(p.c_str(), GENERIC_WRITE, 0, NULL,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (w == INVALID_HANDLE_VALUE) return;
+    const unsigned char bom[2] = { 0xFF, 0xFE };
+    DWORD put = 0;
+    WriteFile(w, bom, 2, &put, NULL);
+    CloseHandle(w);
+}
+
 static void SaveSettings() {
     std::wstring p = SettingsPath();
     if (p.empty()) return;
+    EnsureUnicodeIni(p);
     const wchar_t* f = p.c_str();
     wchar_t v[32];
     swprintf_s(v, L"%d", g_enc);
@@ -1648,6 +1683,8 @@ static void SaveSettings() {
     WritePrivateProfileStringW(L"Font", L"Italic", v, f);
     swprintf_s(v, L"%d", g_zoom);
     WritePrivateProfileStringW(L"Font", L"Zoom", v, f);
+    swprintf_s(v, L"%d", g_fontChosen ? 1 : 0);
+    WritePrivateProfileStringW(L"Font", L"Chosen", v, f);
     SaveWindowPlacement(f);
 }
 
@@ -1686,6 +1723,7 @@ static INT_PTR CALLBACK SettingsProc(HWND d, UINT m, WPARAM w, LPARAM) {
                 g_dlgFont = lf;
                 g_dlgPt = cf.iPointSize / 10;
                 if (g_dlgPt < 1) g_dlgPt = 1;
+                g_fontChosen = true;
                 SetFontLabel(d);
             }
             return TRUE;
