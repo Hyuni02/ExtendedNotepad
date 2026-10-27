@@ -109,6 +109,9 @@ static HWND    g_findDlg = NULL;   // 찾기 또는 바꾸기 (메모장처럼 �
 static bool    g_findIsReplace = false;
 static PAGESETUPDLGW g_psd;
 static bool    g_psdInit = false;
+static RECT    g_place = { 0, 0, 0, 0 };   // 마지막으로 쓴 창 위치/크기
+static bool    g_placeMax = false;         // 최대화 상태였는가
+static bool    g_hasPlace = false;
 
 struct FindOpts {
     std::wstring what, with;
@@ -1585,6 +1588,42 @@ static void LoadSettings() {
     g_basePt = (pt >= 1 && pt <= 400) ? pt : 11;
     g_baseFont.lfWeight = (LONG)GetPrivateProfileIntW(L"Font", L"Weight", FW_NORMAL, f);
     g_baseFont.lfItalic = (BYTE)GetPrivateProfileIntW(L"Font", L"Italic", 0, f);
+
+    int x = (int)GetPrivateProfileIntW(L"Window", L"X", 0, f);
+    int y = (int)GetPrivateProfileIntW(L"Window", L"Y", 0, f);
+    int cx = (int)GetPrivateProfileIntW(L"Window", L"W", 0, f);
+    int cy = (int)GetPrivateProfileIntW(L"Window", L"H", 0, f);
+    g_placeMax = GetPrivateProfileIntW(L"Window", L"Maximized", 0, f) != 0;
+    if (cx >= 200 && cy >= 150) {
+        SetRect(&g_place, x, y, x + cx, y + cy);
+        g_hasPlace = true;
+    }
+}
+
+// 모니터 구성이 바뀌어 저장된 자리가 화면 밖이면 쓰지 않는다.
+static bool PlaceOnScreen(const RECT& r) {
+    return MonitorFromRect(&r, MONITOR_DEFAULTTONULL) != NULL;
+}
+
+static void SaveWindowPlacement(const wchar_t* f) {
+    if (!g_main) return;
+    WINDOWPLACEMENT wp;
+    ZeroMemory(&wp, sizeof(wp));
+    wp.length = sizeof(wp);
+    if (!GetWindowPlacement(g_main, &wp)) return;
+    // rcNormalPosition은 최대화/최소화 중에도 "복원했을 때의 자리"를 담고 있다
+    const RECT& r = wp.rcNormalPosition;
+    wchar_t v[32];
+    swprintf_s(v, L"%d", (int)r.left);
+    WritePrivateProfileStringW(L"Window", L"X", v, f);
+    swprintf_s(v, L"%d", (int)r.top);
+    WritePrivateProfileStringW(L"Window", L"Y", v, f);
+    swprintf_s(v, L"%d", (int)(r.right - r.left));
+    WritePrivateProfileStringW(L"Window", L"W", v, f);
+    swprintf_s(v, L"%d", (int)(r.bottom - r.top));
+    WritePrivateProfileStringW(L"Window", L"H", v, f);
+    swprintf_s(v, L"%d", wp.showCmd == SW_SHOWMAXIMIZED ? 1 : 0);
+    WritePrivateProfileStringW(L"Window", L"Maximized", v, f);
 }
 
 static void SaveSettings() {
@@ -1605,6 +1644,7 @@ static void SaveSettings() {
     WritePrivateProfileStringW(L"Font", L"Weight", v, f);
     swprintf_s(v, L"%d", (int)g_baseFont.lfItalic);
     WritePrivateProfileStringW(L"Font", L"Italic", v, f);
+    SaveWindowPlacement(f);
 }
 
 static LOGFONTW g_dlgFont;
@@ -2290,7 +2330,19 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int) {
     g_focus = g_root;
     ApplyFont();                 // g_font 생성 + 모든 Pane 적용 + 배치
     LayoutStatus();
-    ShowWindow(g_main, SW_SHOW);
+
+    // 지난번에 쓰던 자리로 되돌린다 (보이기 전에 해야 창이 튀지 않는다)
+    int show = SW_SHOW;
+    if (g_hasPlace && PlaceOnScreen(g_place)) {
+        WINDOWPLACEMENT wp;
+        ZeroMemory(&wp, sizeof(wp));
+        wp.length = sizeof(wp);
+        wp.rcNormalPosition = g_place;
+        wp.showCmd = g_placeMax ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL;
+        SetWindowPlacement(g_main, &wp);
+        show = g_placeMax ? SW_SHOWMAXIMIZED : SW_SHOW;
+    }
+    ShowWindow(g_main, show);
     SetFocus(g_root->edit);
 
     // .etxt 파일 연결로 실행될 때는 인수로 경로가 온다
