@@ -1588,6 +1588,8 @@ static void LoadSettings() {
     g_basePt = (pt >= 1 && pt <= 400) ? pt : 11;
     g_baseFont.lfWeight = (LONG)GetPrivateProfileIntW(L"Font", L"Weight", FW_NORMAL, f);
     g_baseFont.lfItalic = (BYTE)GetPrivateProfileIntW(L"Font", L"Italic", 0, f);
+    int zoom = (int)GetPrivateProfileIntW(L"Font", L"Zoom", 100, f);
+    g_zoom = (zoom >= 10 && zoom <= 500) ? zoom : 100;
 
     int x = (int)GetPrivateProfileIntW(L"Window", L"X", 0, f);
     int y = (int)GetPrivateProfileIntW(L"Window", L"Y", 0, f);
@@ -1644,6 +1646,8 @@ static void SaveSettings() {
     WritePrivateProfileStringW(L"Font", L"Weight", v, f);
     swprintf_s(v, L"%d", (int)g_baseFont.lfItalic);
     WritePrivateProfileStringW(L"Font", L"Italic", v, f);
+    swprintf_s(v, L"%d", g_zoom);
+    WritePrivateProfileStringW(L"Font", L"Zoom", v, f);
     SaveWindowPlacement(f);
 }
 
