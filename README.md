@@ -110,6 +110,7 @@ ETXT1
 | 다시 실행 | `Ctrl+Shift+Z` 또는 `Ctrl+Y` |
 | 잘라내기 / 복사 / 붙여넣기 | `Ctrl+X` / `Ctrl+C` / `Ctrl+V` |
 | 삭제 | `Del` |
+| 앞 단어 지우기 | `Ctrl+Backspace` |
 | 모두 선택 | `Ctrl+A` |
 | 시간/날짜 넣기 | `F5` |
 | Bing으로 검색 | `Ctrl+E` |

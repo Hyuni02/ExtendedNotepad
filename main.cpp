@@ -1871,6 +1871,48 @@ static void ShowPaneContextMenu(HWND edit, int x, int y) {
     DestroyMenu(m);
 }
 
+// ---- Ctrl+Backspace (앞 단어 지우기) ---------------------------------------
+// EDIT은 Ctrl+Backspace를 WM_CHAR 0x7F로 받아 글자로 넣어버린다(네모로 보인다).
+// 메모장처럼 앞 단어를 지우도록 직접 처리한다.
+static bool IsWordChar(wchar_t c) {
+    WORD t = 0;
+    if (!GetStringTypeW(CT_CTYPE1, &c, 1, &t)) return false;
+    return (t & (C1_ALPHA | C1_DIGIT)) != 0 || c == L'_';
+}
+
+static void DeletePrevWord(HWND h) {
+    int a, b;
+    GetSel(h, a, b);
+    if (a != b) {                       // 선택이 있으면 그것만 지운다
+        SendMessageW(h, EM_REPLACESEL, TRUE, (LPARAM)L"");
+        return;
+    }
+    if (a <= 0) return;
+
+    int line = (int)SendMessageW(h, EM_LINEFROMCHAR, a, 0);
+    int idx = (int)SendMessageW(h, EM_LINEINDEX, line, 0);
+    int start;
+    if (idx < 0 || a <= idx) {
+        start = a - 2;                  // 줄 맨 앞이면 앞 줄과 합친다 (CRLF 2글자)
+        if (start < idx) start = a - 1;
+        if (start < 0) start = 0;
+    } else {
+        std::wstring t = EditRange(h, idx, a);   // 현재 줄에서 캐럿 앞부분
+        int i = (int)t.size();
+        while (i > 0 && (t[i - 1] == L' ' || t[i - 1] == L'\t')) --i;   // 공백 먼저
+        if (i > 0) {
+            bool word = IsWordChar(t[i - 1]);    // 글자 묶음과 기호 묶음을 구분
+            while (i > 0 && t[i - 1] != L' ' && t[i - 1] != L'\t' &&
+                   IsWordChar(t[i - 1]) == word)
+                --i;
+        }
+        start = idx + i;
+        if (start >= a) start = a - 1;           // 최소 한 글자는 지운다
+    }
+    SendMessageW(h, EM_SETSEL, start, a);
+    SendMessageW(h, EM_REPLACESEL, TRUE, (LPARAM)L"");
+}
+
 // ---- EDIT 서브클래스 -------------------------------------------------------
 static LRESULT CALLBACK EditProc(HWND h, UINT msg, WPARAM wp, LPARAM lp,
                                  UINT_PTR, DWORD_PTR) {
@@ -1895,6 +1937,14 @@ static LRESULT CALLBACK EditProc(HWND h, UINT msg, WPARAM wp, LPARAM lp,
     }
     // 캐럿이 튀면 타이핑 묶음을 끊는다
     if (msg == WM_LBUTTONDOWN || (msg == WM_KEYDOWN && IsNavKey(wp))) BreakRun();
+
+    // Ctrl+Backspace. 안에서 보내는 EM_REPLACESEL이 아래 기록 경로를 타므로
+    // 되돌리기에도 한 단계로 남는다.
+    if (msg == WM_CHAR && wp == 0x7F && !g_applying && !g_quiet) {
+        DeletePrevWord(h);
+        UpdateStatus();
+        return 0;
+    }
 
     if (!g_applying && !g_quiet && GateMsg(msg, wp)) {
         Node* n = FindByHwnd(g_root, h);
