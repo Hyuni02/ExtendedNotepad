@@ -1913,6 +1913,40 @@ static void DeletePrevWord(HWND h) {
     SendMessageW(h, EM_REPLACESEL, TRUE, (LPARAM)L"");
 }
 
+// EDIT의 Ctrl+Delete는 줄 끝까지 통째로 지운다. 메모장처럼 뒤 단어 하나만 지운다.
+static void DeleteNextWord(HWND h) {
+    int a, b;
+    GetSel(h, a, b);
+    if (a != b) {
+        SendMessageW(h, EM_REPLACESEL, TRUE, (LPARAM)L"");
+        return;
+    }
+    int len = GetWindowTextLengthW(h);
+    if (a >= len) return;
+
+    int line = (int)SendMessageW(h, EM_LINEFROMCHAR, a, 0);
+    int idx = (int)SendMessageW(h, EM_LINEINDEX, line, 0);
+    int lineEnd = (idx < 0) ? a : idx + (int)SendMessageW(h, EM_LINELENGTH, idx, 0);
+    int end;
+    if (a >= lineEnd) {
+        end = a + 2;                    // 줄 끝이면 CRLF를 지워 다음 줄과 합친다
+        if (end > len) end = len;
+    } else {
+        std::wstring t = EditRange(h, a, lineEnd);
+        int n = (int)t.size(), i = 0;
+        if (i < n && t[i] != L' ' && t[i] != L'\t') {   // 먼저 한 묶음을 지우고
+            bool word = IsWordChar(t[i]);
+            while (i < n && t[i] != L' ' && t[i] != L'\t' && IsWordChar(t[i]) == word)
+                ++i;
+        }
+        while (i < n && (t[i] == L' ' || t[i] == L'\t')) ++i;   // 뒤따르는 공백까지
+        end = a + i;
+        if (end <= a) end = a + 1;      // 최소 한 글자는 지운다
+    }
+    SendMessageW(h, EM_SETSEL, a, end);
+    SendMessageW(h, EM_REPLACESEL, TRUE, (LPARAM)L"");
+}
+
 // ---- EDIT 서브클래스 -------------------------------------------------------
 static LRESULT CALLBACK EditProc(HWND h, UINT msg, WPARAM wp, LPARAM lp,
                                  UINT_PTR, DWORD_PTR) {
@@ -1942,6 +1976,13 @@ static LRESULT CALLBACK EditProc(HWND h, UINT msg, WPARAM wp, LPARAM lp,
     // 되돌리기에도 한 단계로 남는다.
     if (msg == WM_CHAR && wp == 0x7F && !g_applying && !g_quiet) {
         DeletePrevWord(h);
+        UpdateStatus();
+        return 0;
+    }
+    // Ctrl+Delete. Delete는 WM_CHAR가 없어 WM_KEYDOWN에서 잡는다.
+    if (msg == WM_KEYDOWN && wp == VK_DELETE && !g_applying && !g_quiet &&
+        (GetKeyState(VK_CONTROL) & 0x8000)) {
+        DeleteNextWord(h);
         UpdateStatus();
         return 0;
     }
