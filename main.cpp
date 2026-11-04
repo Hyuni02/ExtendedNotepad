@@ -27,7 +27,7 @@ enum { DIR_V = 0, DIR_H = 1 };   // V: 수직 분할선(좌/우), H: 수평 분�
 static const int GAP    = 2;     // SPEC §3: Pane 사이 간격 2px
 static const int HITPAD = 3;     // 분할선 드래그 히트 영역 확장 (2px는 집기 어려움)
 
-enum { CMD_TEXT = 0, CMD_SPLIT = 1, CMD_CLOSE = 2 };
+enum { CMD_TEXT = 0, CMD_SPLIT = 1, CMD_CLOSE = 2, CMD_RATIO = 3 };
 enum { ENC_UTF8 = 0, ENC_UTF8BOM, ENC_UTF16LE, ENC_ANSI };
 
 enum {
@@ -66,6 +66,13 @@ struct Node {
 typedef std::vector<unsigned char> Path;   // 루트에서 0=a, 1=b
 
 // ---- 명령 (전역 undo 스택) -------------------------------------------------
+// 분할선 하나가 움직인 기록. 통일은 여러 개가 한 번에 움직인다.
+struct RatioChange {
+    Path  path;
+    float before, after;
+    RatioChange() : before(0.5f), after(0.5f) {}
+};
+
 struct Cmd {
     int kind;
     // CMD_TEXT
@@ -77,6 +84,7 @@ struct Cmd {
     float ratio;
     bool  wasA;          // CLOSE: 제거된 Pane이 a쪽이었는가
     std::wstring text;   // CLOSE: 제거된 Pane의 내용
+    std::vector<RatioChange> ratios;   // CMD_RATIO
     Cmd() : kind(0), pane(0), pos(0), selA(0), selB(0), dir(0), ratio(0.5f), wasA(false) {}
 };
 
@@ -91,6 +99,7 @@ static bool  g_applying = false; // undo/redo 적용 중에는 기록하지 않�
 static int   g_nextEditId = IDC_EDIT_FIRST;
 static int   g_nextPaneId = 1;
 static Node* g_drag  = NULL;     // 드래그 중인 Split 노드
+static float g_dragFrom = 0.5f;  // 드래그 시작 시점의 비율 (되돌리기용)
 static int   g_enc   = ENC_UTF8;
 static std::wstring g_path;      // 현재 파일 (빈 문자열 = 제목 없음)
 
@@ -514,19 +523,37 @@ static int SpanCount(Node* n, int dir) {
 }
 
 // dir 방향 분할선만 칸 수에 비례해 고른다. 반대 방향 분할선은 건드리지 않는다.
-static void EqualizeDir(Node* n, int dir) {
+// 바뀐 것은 out에 적어 되돌릴 수 있게 한다.
+static void EqualizeDir(Node* n, int dir, std::vector<RatioChange>& out) {
     if (n->isPane) return;
     if (n->dir == dir) {
         int a = SpanCount(n->a, dir), b = SpanCount(n->b, dir);
-        if (a + b > 0) n->ratio = (float)a / (float)(a + b);
+        if (a + b > 0) {
+            float r = (float)a / (float)(a + b);
+            if (r != n->ratio) {
+                RatioChange rc;
+                rc.path = PathOf(n);
+                rc.before = n->ratio;
+                rc.after = r;
+                out.push_back(rc);
+                n->ratio = r;
+            }
+        }
     }
-    EqualizeDir(n->a, dir);
-    EqualizeDir(n->b, dir);
+    EqualizeDir(n->a, dir, out);
+    EqualizeDir(n->b, dir, out);
 }
 
 static void EqualizePanes(int dir) {
     if (!g_root) return;
-    EqualizeDir(g_root, dir);
+    BreakRun();
+    std::vector<RatioChange> ch;
+    EqualizeDir(g_root, dir, ch);
+    if (ch.empty()) return;            // 이미 통일돼 있으면 기록하지 않는다
+    Cmd c;
+    c.kind = CMD_RATIO;
+    c.ratios = ch;
+    PushCmd(c);
     Relayout();
 }
 
@@ -575,6 +602,12 @@ static void Undo() {
             Relayout();
             if (g_focus->edit) SetFocus(g_focus->edit);
         }
+    } else if (c.kind == CMD_RATIO) {
+        for (size_t i = 0; i < c.ratios.size(); ++i) {
+            Node* n = AtPath(c.ratios[i].path);
+            if (n && !n->isPane) n->ratio = c.ratios[i].before;
+        }
+        Relayout();
     } else {                      // CMD_CLOSE 취소: Split과 Pane을 되살린다
         Node* x = AtPath(c.path);
         if (x) {
@@ -612,6 +645,12 @@ static void Redo() {
     } else if (c.kind == CMD_SPLIT) {
         Node* p = AtPath(c.path);
         if (p && p->isPane) DoSplit(p, c.dir);
+    } else if (c.kind == CMD_RATIO) {
+        for (size_t i = 0; i < c.ratios.size(); ++i) {
+            Node* n = AtPath(c.ratios[i].path);
+            if (n && !n->isPane) n->ratio = c.ratios[i].after;
+        }
+        Relayout();
     } else {
         Node* s = AtPath(c.path);
         if (s && !s->isPane) DoClose(c.wasA ? s->a : s->b);
@@ -2057,7 +2096,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONDOWN: {
         POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
         Node* s = HitSplitter(g_root, pt);
-        if (s) { g_drag = s; SetCapture(h); }
+        if (s) { g_drag = s; g_dragFrom = s->ratio; SetCapture(h); }
         return 0;
     }
 
@@ -2089,7 +2128,22 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_LBUTTONUP:
-        if (g_drag) { g_drag = NULL; ReleaseCapture(); }
+        if (g_drag) {
+            // 드래그 전체를 한 단계로 기록한다 (움직이는 중에는 기록하지 않는다)
+            if (g_drag->ratio != g_dragFrom) {
+                BreakRun();
+                Cmd c;
+                c.kind = CMD_RATIO;
+                RatioChange rc;
+                rc.path = PathOf(g_drag);
+                rc.before = g_dragFrom;
+                rc.after = g_drag->ratio;
+                c.ratios.push_back(rc);
+                PushCmd(c);
+            }
+            g_drag = NULL;
+            ReleaseCapture();
+        }
         return 0;
 
     case WM_SETCURSOR: {
@@ -2441,6 +2495,7 @@ static void TestFind() {
 // 너비/높이 통일: 같은 방향 분할선만, 칸 수에 비례해 고친다
 static void TestEqualize() {
     RECT full = { 0, 0, 1000, 600 };
+    std::vector<RatioChange> ch;
 
     // 같은 방향으로 세 번 나누면 정확히 1/3씩이어야 한다
     g_root = NewPane(); g_focus = g_root;
@@ -2450,7 +2505,9 @@ static void TestEqualize() {
     g_root->b->ratio = 0.1f;
     assert(SpanCount(g_root->a, DIR_V) == 1);
     assert(SpanCount(g_root->b, DIR_V) == 2);
-    EqualizeDir(g_root, DIR_V);
+    ch.clear();
+    EqualizeDir(g_root, DIR_V, ch);
+    assert(ch.size() == 2);                // 바뀐 분할선 두 개를 기록했다
     assert(g_root->ratio > 0.32f && g_root->ratio < 0.34f);      // 1/3
     assert(g_root->b->ratio > 0.49f && g_root->b->ratio < 0.51f); // 1/2
     Layout(g_root, full);
@@ -2469,7 +2526,8 @@ static void TestEqualize() {
     assert(SpanCount(g_root->b, DIR_V) == 1);
     assert(SpanCount(g_root->b, DIR_H) == 2);
     g_root->ratio = 0.8f;
-    EqualizeDir(g_root, DIR_V);
+    ch.clear();
+    EqualizeDir(g_root, DIR_V, ch);
     assert(g_root->ratio > 0.49f && g_root->ratio < 0.51f);
     Layout(g_root, full);
     assert((g_root->a->rc.right - g_root->a->rc.left) ==
@@ -2478,9 +2536,43 @@ static void TestEqualize() {
     // 높이 통일은 좌우 분할선을 건드리지 않는다
     g_root->ratio = 0.25f;
     g_root->b->ratio = 0.75f;
-    EqualizeDir(g_root, DIR_H);
+    ch.clear();
+    EqualizeDir(g_root, DIR_H, ch);
+    assert(ch.size() == 1);                                       // 상하 하나만
     assert(g_root->ratio > 0.24f && g_root->ratio < 0.26f);       // 그대로
     assert(g_root->b->ratio > 0.49f && g_root->b->ratio < 0.51f); // 고쳐짐
+
+    FreeSubtree(g_root); g_root = NULL; g_focus = NULL;
+    ResetUndo();
+}
+
+// 크기 변경이 되돌리기와 수정 상태에 잡힌다
+static void TestRatioUndo() {
+    ResetUndo();
+    g_root = NewPane(); g_focus = g_root;
+    SplitFocus(DIR_V);
+    SplitFocus(DIR_V);                     // V(p1, V(p2, p3)) — 0.5 / 0.5
+    g_savePoint = (long long)g_pos;        // 여기까지 저장했다고 치고
+    UpdateDirty();
+    assert(!g_dirty);
+
+    EqualizePanes(DIR_V);                  // 1/3, 1/2 로 바뀐다
+    assert(g_dirty);                       // 저장 여부 확인에 잡힌다
+    assert(g_root->ratio > 0.32f && g_root->ratio < 0.34f);
+
+    Undo();
+    assert(!g_dirty);                      // 저장 시점으로 돌아왔다
+    assert(g_root->ratio > 0.49f && g_root->ratio < 0.51f);
+    assert(g_root->b->ratio > 0.49f && g_root->b->ratio < 0.51f);
+
+    Redo();
+    assert(g_dirty);
+    assert(g_root->ratio > 0.32f && g_root->ratio < 0.34f);
+
+    // 이미 통일돼 있으면 아무것도 기록하지 않는다
+    size_t before = g_pos;
+    EqualizePanes(DIR_V);
+    assert(g_pos == before);
 
     FreeSubtree(g_root); g_root = NULL; g_focus = NULL;
     ResetUndo();
@@ -2495,6 +2587,7 @@ int main() {
     TestEncoding();
     TestFind();
     TestEqualize();
+    TestRatioUndo();
     printf("selftest ok\n");
     return 0;
 }
