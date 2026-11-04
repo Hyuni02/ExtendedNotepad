@@ -40,6 +40,7 @@ enum {
     IDM_FIND, IDM_FINDNEXT, IDM_FINDPREV, IDM_REPLACE, IDM_GOTO, IDM_BINGSEARCH,
     IDM_WORDWRAP, IDM_FONT, IDM_SETTINGS,
     IDM_ZOOMIN, IDM_ZOOMOUT, IDM_ZOOMRESET, IDM_STATUSBAR, IDM_ABOUT,
+    IDM_EVEN_WIDTH, IDM_EVEN_HEIGHT,
     IDM_ENC_FIRST, IDM_ENC_UTF8 = IDM_ENC_FIRST, IDM_ENC_UTF8BOM,
     IDM_ENC_UTF16LE, IDM_ENC_ANSI, IDM_ENC_LAST = IDM_ENC_ANSI,
     IDC_EDIT_FIRST = 2000
@@ -501,6 +502,32 @@ static void CloseFocusPane() {
     c.text  = PaneText(p);
     DoClose(p);
     PushCmd(c);
+}
+
+// dir 방향으로 이 서브트리가 몇 칸을 차지하는가.
+// 같은 방향 분할은 칸이 늘고, 반대 방향 분할은 넓은 쪽 칸 수를 그대로 쓴다.
+static int SpanCount(Node* n, int dir) {
+    if (n->isPane) return 1;
+    int a = SpanCount(n->a, dir), b = SpanCount(n->b, dir);
+    if (n->dir == dir) return a + b;
+    return a > b ? a : b;
+}
+
+// dir 방향 분할선만 칸 수에 비례해 고른다. 반대 방향 분할선은 건드리지 않는다.
+static void EqualizeDir(Node* n, int dir) {
+    if (n->isPane) return;
+    if (n->dir == dir) {
+        int a = SpanCount(n->a, dir), b = SpanCount(n->b, dir);
+        if (a + b > 0) n->ratio = (float)a / (float)(a + b);
+    }
+    EqualizeDir(n->a, dir);
+    EqualizeDir(n->b, dir);
+}
+
+static void EqualizePanes(int dir) {
+    if (!g_root) return;
+    EqualizeDir(g_root, dir);
+    Relayout();
 }
 
 static void CyclePane(int delta) {
@@ -1835,6 +1862,9 @@ static HMENU BuildMenuBar() {
     HMENU pane = CreateMenu();
     AppendPaneItems(pane);
     AppendMenuW(pane, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(pane, MF_STRING, IDM_EVEN_WIDTH, L"너비 통일(&I)\tCtrl+Shift+R");
+    AppendMenuW(pane, MF_STRING, IDM_EVEN_HEIGHT, L"높이 통일(&H)\tCtrl+Shift+T");
+    AppendMenuW(pane, MF_SEPARATOR, 0, NULL);
     AppendMenuW(pane, MF_STRING, IDM_NEXT_PANE, L"다음 공간(&N)\tCtrl+Tab");
     AppendMenuW(pane, MF_STRING, IDM_PREV_PANE, L"이전 공간(&P)\tCtrl+Shift+Tab");
 
@@ -2111,6 +2141,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case IDM_SPLIT_V:    SplitFocus(DIR_V);  return 0;
         case IDM_SPLIT_H:    SplitFocus(DIR_H);  return 0;
         case IDM_CLOSE_PANE: CloseFocusPane();   return 0;
+        case IDM_EVEN_WIDTH:  EqualizePanes(DIR_V); return 0;
+        case IDM_EVEN_HEIGHT: EqualizePanes(DIR_H); return 0;
         case IDM_NEXT_PANE:  CyclePane(+1);      return 0;
         case IDM_PREV_PANE:  CyclePane(-1);      return 0;
         case IDM_CUT:        if (e) SendMessageW(e, WM_CUT, 0, 0); return 0;
@@ -2406,6 +2438,54 @@ static void TestFind() {
     assert(ReplaceAllInText(s, L"b", L"", true) == 1 && s == L"ac");
 }
 
+// 너비/높이 통일: 같은 방향 분할선만, 칸 수에 비례해 고친다
+static void TestEqualize() {
+    RECT full = { 0, 0, 1000, 600 };
+
+    // 같은 방향으로 세 번 나누면 정확히 1/3씩이어야 한다
+    g_root = NewPane(); g_focus = g_root;
+    SplitFocus(DIR_V);                     // V(p1, p2), 포커스 p2
+    SplitFocus(DIR_V);                     // V(p1, V(p2, p3))
+    g_root->ratio = 0.9f;                  // 일부러 치우치게 해두고
+    g_root->b->ratio = 0.1f;
+    assert(SpanCount(g_root->a, DIR_V) == 1);
+    assert(SpanCount(g_root->b, DIR_V) == 2);
+    EqualizeDir(g_root, DIR_V);
+    assert(g_root->ratio > 0.32f && g_root->ratio < 0.34f);      // 1/3
+    assert(g_root->b->ratio > 0.49f && g_root->b->ratio < 0.51f); // 1/2
+    Layout(g_root, full);
+    int w1 = g_root->a->rc.right - g_root->a->rc.left;
+    int w2 = g_root->b->a->rc.right - g_root->b->a->rc.left;
+    int w3 = g_root->b->b->rc.right - g_root->b->b->rc.left;
+    assert(w1 >= 330 && w1 <= 334);
+    assert(w2 >= 330 && w2 <= 334);
+    assert(w3 >= 330 && w3 <= 334);
+    FreeSubtree(g_root);
+
+    // 반대 방향 분할은 칸을 늘리지 않는다 → 좌우는 반반
+    g_root = NewPane(); g_focus = g_root;
+    SplitFocus(DIR_V);
+    SplitFocus(DIR_H);                     // V(p1, H(p2, p3))
+    assert(SpanCount(g_root->b, DIR_V) == 1);
+    assert(SpanCount(g_root->b, DIR_H) == 2);
+    g_root->ratio = 0.8f;
+    EqualizeDir(g_root, DIR_V);
+    assert(g_root->ratio > 0.49f && g_root->ratio < 0.51f);
+    Layout(g_root, full);
+    assert((g_root->a->rc.right - g_root->a->rc.left) ==
+           (g_root->b->a->rc.right - g_root->b->a->rc.left));
+
+    // 높이 통일은 좌우 분할선을 건드리지 않는다
+    g_root->ratio = 0.25f;
+    g_root->b->ratio = 0.75f;
+    EqualizeDir(g_root, DIR_H);
+    assert(g_root->ratio > 0.24f && g_root->ratio < 0.26f);       // 그대로
+    assert(g_root->b->ratio > 0.49f && g_root->b->ratio < 0.51f); // 고쳐짐
+
+    FreeSubtree(g_root); g_root = NULL; g_focus = NULL;
+    ResetUndo();
+}
+
 int main() {
     TestLayout();
     TestPath();
@@ -2414,6 +2494,7 @@ int main() {
     TestEtxtRoundTrip();
     TestEncoding();
     TestFind();
+    TestEqualize();
     printf("selftest ok\n");
     return 0;
 }
@@ -2501,6 +2582,8 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int) {
         { FVIRTKEY | FCONTROL, 'R', IDM_SPLIT_V },
         { FVIRTKEY | FCONTROL, 'T', IDM_SPLIT_H },
         { FVIRTKEY | FCONTROL, 'W', IDM_CLOSE_PANE },
+        { FVIRTKEY | FCONTROL | FSHIFT, 'R', IDM_EVEN_WIDTH },
+        { FVIRTKEY | FCONTROL | FSHIFT, 'T', IDM_EVEN_HEIGHT },
         { FVIRTKEY | FCONTROL, VK_TAB, IDM_NEXT_PANE },
         { FVIRTKEY | FCONTROL | FSHIFT, VK_TAB, IDM_PREV_PANE },
         { FVIRTKEY, VK_F5, IDM_TIMEDATE },
