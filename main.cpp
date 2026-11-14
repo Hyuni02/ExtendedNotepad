@@ -934,12 +934,13 @@ static std::wstring BuildEtxt() {
     int idx = 0;
     WriteNodeJson(g_root, tree, idx);
 
-    char head[256];
-    sprintf_s(head, "{\"root\":%s,\"focus\":%d,\"wrap\":%s}",
-              tree.c_str(), focus, g_wrap ? "true" : "false");
+    // 헤더에는 트리 전체가 들어간다. 고정 버퍼를 쓰면 공간이 늘어날수록 넘친다.
+    char tail[64];
+    sprintf_s(tail, ",\"focus\":%d,\"wrap\":%s}", focus, g_wrap ? "true" : "false");
+    std::string head = "{\"root\":" + tree + tail;
 
     std::wstring w = L"ETXT1\n";
-    for (const char* p = head; *p; ++p) w += (wchar_t)(unsigned char)*p;
+    for (size_t i = 0; i < head.size(); ++i) w += (wchar_t)(unsigned char)head[i];
     w += L'\n';
     for (size_t i = 0; i < leaves.size(); ++i) {
         wchar_t mark[32];
@@ -1005,7 +1006,8 @@ static Node* ParseNodeJson(Jp& j, const std::vector<std::wstring>& bodies, bool&
     }
     if (!a || !b) { ok = false; FreeSubtree(a); FreeSubtree(b); return NULL; }
     Node* s = NewSplit(dir);
-    s->ratio = ratio;
+    // 파일에서 온 값이다. 범위 밖이면 배치가 깨지고, 다시 쓸 때 자릿수가 폭주한다.
+    s->ratio = (ratio >= 0.f && ratio <= 1.f) ? ratio : 0.5f;
     s->a = a; s->b = b;
     a->parent = s; b->parent = s;
     return s;
@@ -2443,6 +2445,42 @@ static void TestEtxtRoundTrip() {
     ResetUndo();
 }
 
+// 공간이 많아도 .etxt 헤더가 온전해야 한다.
+// 고정 버퍼로 만들던 시절에는 7개부터 넘쳐 저장할 때 프로세스가 죽었다.
+static void TestManyPanes() {
+    for (int count = 2; count <= 40; ++count) {
+        g_root = NewPane(); g_focus = g_root;
+        for (int i = 1; i < count; ++i)
+            SplitFocus((i % 3 == 0) ? DIR_H : DIR_V);   // 방향을 섞어 깊게 만든다
+        assert(LeafCount(g_root) == count);
+
+        std::wstring w = BuildEtxt();
+        // 헤더 줄이 끊기지 않고 끝까지 있어야 한다
+        size_t he = w.find(L'\n', 6);
+        assert(he != std::wstring::npos);
+        std::wstring head = w.substr(6, he - 6);
+        assert(head[0] == L'{' && head[head.size() - 1] == L'}');
+        assert(head.find(L"\"wrap\":") != std::wstring::npos);
+
+        int fi = -1; bool wr = false;
+        Node* r2 = ParseEtxt(w, fi, wr);
+        assert(r2 && LeafCount(r2) == count);          // 그대로 다시 읽힌다
+        FreeSubtree(r2);
+
+        FreeSubtree(g_root); g_root = NULL; g_focus = NULL;
+        ResetUndo();
+    }
+
+    // 깨진 비율은 기본값으로 떨어뜨린다 (자릿수 폭주 방지)
+    int fi; bool wr;
+    Node* bad = ParseEtxt(
+        L"ETXT1\n{\"root\":{\"d\":\"V\",\"r\":1e300,\"a\":{\"p\":0},\"b\":{\"p\":1}},"
+        L"\"focus\":0,\"wrap\":true}\n", fi, wr);
+    assert(bad && !bad->isPane);
+    assert(bad->ratio > 0.49f && bad->ratio < 0.51f);
+    FreeSubtree(bad);
+}
+
 // 인코딩 왕복
 static void TestEncoding() {
     const std::wstring s = L"한글 abc\r\n줄바꿈";
@@ -2584,6 +2622,7 @@ int main() {
     TestLayoutUndo();
     TestMerge();
     TestEtxtRoundTrip();
+    TestManyPanes();
     TestEncoding();
     TestFind();
     TestEqualize();
