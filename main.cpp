@@ -1184,8 +1184,22 @@ static void SavePaneOnly() {
     WriteWholeFile(file, EncodeText(PaneText(g_focus), g_enc));
 }
 
+// 모든 공간이 비어 있는가
+static bool DocumentIsEmpty() {
+    if (!g_root) return true;
+    std::vector<Node*> v;
+    CollectLeaves(g_root, v);
+    for (size_t i = 0; i < v.size(); ++i)
+        if (v[i]->edit && GetWindowTextLengthW(v[i]->edit) > 0) return false;
+    return true;
+}
+
 static bool ConfirmSave() {
     if (!g_dirty) return true;
+    // 제목 없는 문서가 통째로 비어 있으면 저장할 것이 없다.
+    // 파일을 연 상태라면 묻는다. 내용을 지운 것도 저장할 만한 변경이고,
+    // 여기서 넘어가면 디스크의 내용을 남긴 채 지운 작업만 사라진다.
+    if (g_path.empty() && DocumentIsEmpty()) return true;
     std::wstring name = g_path.empty() ? L"제목 없음" : BaseName(g_path);
     std::wstring msg = L"변경 내용을 " + name + L"에 저장하시겠습니까?";
     int r = MessageBoxW(g_main, msg.c_str(), L"더 나은 메모장",
